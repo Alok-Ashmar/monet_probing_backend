@@ -9,7 +9,7 @@ from service.ServerLogger import ServerLogger
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from service.state_management import _probe_state_key, _load_probe_state, _save_probe_state
 
-websocket_router = APIRouter(prefix="/ws", tags=["websocket", "ai-qa"])
+websocket_router = APIRouter(prefix="/ws", tags=["websocket", "probe_backend"])
 logger = ServerLogger()
 db_switcher = DBSwitcher(logger=logger)
 
@@ -17,8 +17,8 @@ redis_client = Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:637
 PROBE_ENGINE_WS_URL = os.environ.get("PROBE_ENGINE_WS_URL", "ws://localhost:8002/ws/probe_engine")
 
 
-@websocket_router.websocket("/ai-qa")
-async def websocket_ai_qa(websocket: WebSocket):
+@websocket_router.websocket("/probe_backend")
+async def websocket_probe_backend(websocket: WebSocket):
     """
     A simple websocket route that proxies messages to and from the Probing Engine websocket.
     """
