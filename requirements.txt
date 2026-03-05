@@ -1,0 +1,7 @@
+uvicorn
+fastapi[standard]
+redis
+bson
+pytz
+pymongo
+langchain_community
