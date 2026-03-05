@@ -112,7 +112,7 @@ class SurveyResponse(BaseModel):
     su_id: str
     mo_id: str
     qs_id: str
-    cnt_id: Optional[str] = None
+    cnt_id: Optional[int] = None
     question: str
     response: str
     comment: Optional[str] = None
@@ -226,3 +226,29 @@ class get_token(BaseModel):
     code: str
     redirect_uri: str
     grant_type: str
+
+
+class NSIGHT(BaseModel):
+    """
+    Pydantic schema capturing LLM-evaluated quality metrics for a survey response.
+    """
+
+    quality: int
+    relevance: int
+    detail: int
+    confusion: int
+    negativity: int
+    consistency: int
+    confidence: int
+    keywords: List[str]
+    reason: str
+    gibberish_score: int
+
+
+class NSIGHT_v2(NSIGHT):
+    """
+    Extended NSIGHT schema that also stores the original question and response text.
+    """
+
+    question: str
+    response: str

@@ -5,6 +5,7 @@ import websockets
 from redis import Redis
 from models.schemas import SurveyResponse
 from service.db_switcher import DBSwitcher
+from service.response_store import store_probe_response
 from service.ServerLogger import ServerLogger
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from service.state_management import _probe_state_key, _load_probe_state, _save_probe_state
@@ -35,11 +36,12 @@ async def websocket_probe_backend(websocket: WebSocket):
     
     try:
         current_state_key = None
+        current_client_response = None
         # Connect to the target probing engine websocket
         async with websockets.connect(PROBE_ENGINE_WS_URL) as engine_ws:
             
             async def forward_client_to_engine():
-                nonlocal current_state_key
+                nonlocal current_state_key, current_client_response
                 """
                 Receives messages from the client and forwards them to the probing engine.
                 Tracks response counts to assign a session number for each probing session.
@@ -48,6 +50,7 @@ async def websocket_probe_backend(websocket: WebSocket):
                     while True:
                         data = await websocket.receive_text()
                         client_response = SurveyResponse.model_validate_json(data)
+                        current_client_response = client_response
 
                         db_type = DBSwitcher.get_db_type(str(client_response.su_id), str(client_response.qs_id))
                         if not db_type:
@@ -85,12 +88,13 @@ async def websocket_probe_backend(websocket: WebSocket):
                         # Set default values if not present
                         if not cached_probe_state:
                             cached_probe_state = {
-                                "session_no": 0, 
+                                "session_no": 0,
                                 "su_id": str(client_response.su_id),
                                 "mo_id": str(client_response.mo_id),
                                 "qs_id": str(client_response.qs_id),
                                 "counter": 0,
-                                "ended": False
+                                "ended": False,
+                                "simple_store": True,
                             }
                         else:
                             survey_details = json.loads(cached_payload) if isinstance(cached_payload, (str, bytes, bytearray)) else cached_payload
@@ -123,7 +127,7 @@ async def websocket_probe_backend(websocket: WebSocket):
                     )
 
             async def forward_engine_to_client():
-                nonlocal current_state_key
+                nonlocal current_state_key, current_client_response
                 """
                 Receives messages from the probing engine and forwards them to the client.
                 Updates the session state if a stream ends.
@@ -136,16 +140,27 @@ async def websocket_probe_backend(websocket: WebSocket):
                         engine_response = json.loads(data)
                         
                         # Update the current state key if the probe engine signals ending with ended=True
-                        is_streaming_ended = (
-                            engine_response.get("message") == "streaming-ended" and 
-                            engine_response.get("response", {}).get("ended", False)
-                        )
+                        is_streaming_ended = engine_response.get("message") == "streaming-ended"
+                        quality_ended = engine_response.get("response", {}).get("ended", False)
+
                         if is_streaming_ended:
                             if current_state_key:
                                 state = _load_probe_state(current_state_key)
-                                state["ended"] = True
-                                _save_probe_state(current_state_key, state)
-                        
+                                if quality_ended:
+                                    state["ended"] = True
+                                    _save_probe_state(current_state_key, state)
+
+                                # Store the response for every streaming-ended event (regardless of quality)
+                                if current_client_response and state.get("simple_store", True):
+                                    try:
+                                        await store_probe_response(
+                                            engine_response=engine_response,
+                                            current_client_response=current_client_response,
+                                            state=state,
+                                        )
+                                    except Exception as store_err:
+                                        logger.error(f"Failed to store response: {store_err}")
+
                         await websocket.send_text(data)
 
                 except websockets.exceptions.ConnectionClosed:

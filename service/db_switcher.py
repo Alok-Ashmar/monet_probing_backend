@@ -157,9 +157,7 @@ class MySQLSurveyRepository:
                 study_id=survey_row.get("study_id"),
                 cnt_id=survey_row.get("cnt_id"),
                 survey_description=global_flags.get("survey_description", "-"),
-                survey_title=survey_row.get("study_name")
-                or survey_row.get("cell_name")
-                or survey_row.get("survey_title"),
+                survey_title=survey_row.get("study_name") or survey_row.get("cell_name") or survey_row.get("survey_title"),
                 config=survey_config,
             )
 
@@ -217,7 +215,7 @@ class MySQLSurveyRepository:
             su_id=survey_response.su_id,
             mo_id=survey_response.mo_id,
             qs_id=survey_response.qs_id,
-            cnt_id=survey_response.cnt_id,
+            cnt_id=int(survey_response.cnt_id) if survey_response.cnt_id is not None else None,
             question=survey_response.question,
             response=survey_response.response,
             reason=nsight_v2.reason,
@@ -227,6 +225,7 @@ class MySQLSurveyRepository:
             confusion=nsight_v2.confusion,
             negativity=nsight_v2.negativity,
             consistency=nsight_v2.consistency,
+            confidence=nsight_v2.confidence,
             qs_no=probe.counter,
             session_no=probe.session_no,
         )
