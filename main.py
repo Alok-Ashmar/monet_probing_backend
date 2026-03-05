@@ -8,7 +8,7 @@ env_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(env_path)
 
 # - routes
-from routes.websocket import websocket_router
+from routes.websocket import websocket_router, get_connection_counts
 
 description = """
     Monet-Intern-Effort
@@ -28,7 +28,7 @@ app = FastAPI(
     contact={
         "name": "Monet Networks Inc.",
         "url": "https://www.monetanalytics.com/#/contact-us",
-        "email": "alok@ashmar.in, anshul.badoni@ashmar.in, abhi@ashmar.in",
+        "email": "alok@ashmar.in",
     },
 )
 
@@ -46,13 +46,11 @@ app.add_middleware(
 # Include routers
 app.include_router(websocket_router)
 
-# Health check endpoint
-@app.get("/health")
-def health_check():
-    """Health check for WebSocket handler"""
-    # Basic health check without relying on websocket internals.
-    websocket_status = "healthy"
+# Active connections endpoint
+@app.get("/active_connections")
+def active_connections():
+    """Get active connections"""
+    counts = get_connection_counts()
     return {
-        "websocket_status": websocket_status,
-        "active_probe_sessions": 0
+        **counts
     }

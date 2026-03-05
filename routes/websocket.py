@@ -9,6 +9,13 @@ from service.ServerLogger import ServerLogger
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from service.state_management import _probe_state_key, _load_probe_state, _save_probe_state
 
+active_connections = 0
+
+def get_connection_counts():
+    return {
+        "active_connections": active_connections,
+    }
+
 websocket_router = APIRouter(prefix="/ws", tags=["websocket", "probe_backend"])
 logger = ServerLogger()
 db_switcher = DBSwitcher(logger=logger)
@@ -22,7 +29,9 @@ async def websocket_probe_backend(websocket: WebSocket):
     """
     A simple websocket route that proxies messages to and from the Probing Engine websocket.
     """
+    global active_connections
     await websocket.accept()
+    active_connections += 1
     
     try:
         current_state_key = None
@@ -159,15 +168,18 @@ async def websocket_probe_backend(websocket: WebSocket):
             client_task = asyncio.create_task(forward_client_to_engine())
             engine_task = asyncio.create_task(forward_engine_to_client())
             
-            # Wait until either the client or the target disconnects
-            done, pending = await asyncio.wait(
-                [client_task, engine_task],
-                return_when=asyncio.FIRST_COMPLETED
-            )
-            
-            # Cancel the remaining task
-            for task in pending:
-                task.cancel()
+            try:
+                # Wait until either the client or the target disconnects
+                done, pending = await asyncio.wait(
+                    [client_task, engine_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                # Cancel the remaining task
+                for task in pending:
+                    task.cancel()
+            finally:
+                active_connections -= 1
                 
     except WebSocketDisconnect:
         print("Frontend client disconnected")
@@ -177,3 +189,5 @@ async def websocket_probe_backend(websocket: WebSocket):
     except Exception as e:
         print(f"WebSocket proxy error: {e}")
         await websocket.close(code=1011, reason="Internal server error")
+    finally:
+        active_connections -= 1
