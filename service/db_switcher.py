@@ -53,28 +53,34 @@ class MongoSurveyRepository:
                 "code": 404,
             }
 
-        survey = PySurvey(**survey_doc)
-        question = PySurveyQuestion(**question_doc)
+        survey_config = survey_doc.get("config", {}) or {}
+        question_config = question_doc.get("config", {}) or {}
 
         normalized_survey = PdSurvey(
-            id=None,
-            study_id=None,
-            survey_description=survey.description,
-            survey_title=survey.title,
+            study_id=str(survey_doc.get("_id")),
+            cnt_id=survey_doc.get("cnt_id", 0),
+            survey_description=survey_doc.get("description", ""),
+            survey_title=survey_doc.get("title", ""),
             config=SurveyConfig(
-                language=survey.config.language,
-                add_context=survey.config.add_context,
+                language=survey_config.get("language", "English"),
+                add_context=survey_config.get("add_context", False),
+                repetition=survey_config.get("repetition", False),
             ),
         )
+        
         normalized_question = PdSurveyQuestion(
-            question=question.question,
-            description=question.description,
+            qs_id=str(question_doc.get("_id")),
+            su_id=str(question_doc.get("su_id")),
+            cnt_id=question_doc.get("cnt_id", 0),
+            question=question_doc.get("question", ""),
+            description=question_doc.get("description", ""),
             config=QuestionConfig(
-                probes=question.config.probes,
-                max_probes=question.config.max_probes,
-                quality_threshold=question.config.quality_threshold,
-                gibberish_score=question.config.gibberish_score,
-                add_context=question.config.add_context,
+                min_probes=question_config.get("probes", 1),
+                max_probes=question_config.get("max_probes", 2),
+                add_context=question_config.get("add_context", True),
+                quality_threshold=question_config.get("quality_threshold", 4),
+                gibberish_score=question_config.get("gibberish_score", 4),
+                repetition=question_config.get("repetition", True),
             ),
         )
 
@@ -150,13 +156,14 @@ class MySQLSurveyRepository:
 
             survey_config = SurveyConfig(
                 language=global_flags.get("language", "English"),
+                add_context=global_flags.get("add_context", True),
+                repetition=global_flags.get("repetition", False),
             )
 
             survey = PdSurvey(
-                id=survey_row.get("id"),
                 study_id=survey_row.get("study_id"),
                 cnt_id=survey_row.get("cnt_id"),
-                survey_description=global_flags.get("survey_description", "-"),
+                survey_description=global_flags.get("survey_description", ""),
                 survey_title=survey_row.get("study_name") or survey_row.get("cell_name") or survey_row.get("survey_title"),
                 config=survey_config,
             )
@@ -181,14 +188,20 @@ class MySQLSurveyRepository:
                 }
 
             parse_config = json.loads(question_row.get("config") or "{}")
-            question_config = QuestionConfig(**parse_config)
+            question_config = QuestionConfig(
+                min_probes=parse_config.get("min_probes", 1),
+                max_probes=parse_config.get("max_probes", 2),
+                add_context=parse_config.get("add_context", True),
+                quality_threshold=parse_config.get("quality_threshold", 4),
+                gibberish_score=parse_config.get("gibberish_score", 4),
+                repetition=parse_config.get("repetition", True),
+            )
             question = PdSurveyQuestion(
-                id=question_row.get("id"),
+                qs_id=question_row.get("qs_id"),
                 su_id=question_row.get("su_id"),
-                cnt_id=question_row.get("cnt_id"),
-                question=question_row.get("question"),
-                description=question_row.get("description"),
-                seq_num=question_row.get("seq_num"),
+                cnt_id=question_row.get("cnt_id", 0),
+                question=question_row.get("question", ""),
+                description=question_row.get("description", ""),
                 config=question_config,
             )
             return survey, question, None
@@ -318,18 +331,24 @@ class DBSwitcher:
         """Build the full output payload for caching or API responses."""
         return {
             "survey": {
+                "su_id": survey.study_id,
+                "cnt_id": survey.cnt_id,
+                "survey_title": survey.survey_title,
                 "survey_description": survey.survey_description,
                 "language": survey.config.language,
                 "add_context": survey.config.add_context,
+                "repetition": survey.config.repetition,
             },
             "question": {
+                "qs_id": question.qs_id,
                 "question": question.question,
                 "question_description": question.description,
-                "min_probe": question.config.probes,
+                "min_probe": question.config.min_probes,
                 "max_probe": question.config.max_probes,
                 "quality_threshold": question.config.quality_threshold,
                 "gibberish_score": question.config.gibberish_score,
                 "add_context": question.config.add_context,
+                "repetition": question.config.repetition,
             },
         }
 
@@ -403,66 +422,3 @@ class DBSwitcher:
                 db=db,
             )
         raise ValueError(f"Unsupported db_type: {db_type}")
-
-
-if __name__ == "__main__":
-    import sys
-    import asyncio
-    import argparse
-    from dotenv import load_dotenv
-
-
-    # Ensure project root is on sys.path when running as a script
-    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
-    from modules.ServerLogger import ServerLogger # type: ignore
-
-    env_path = os.path.join(project_root, "server", ".env")
-    load_dotenv(env_path)
-
-    class _SurveyResponseStub:
-        """Lightweight survey response holder for CLI testing."""
-
-        def __init__(self, su_id: str, qs_id: str):
-            """Initialize with survey and question IDs."""
-            self.su_id = su_id
-            self.qs_id = qs_id
-
-    parser = argparse.ArgumentParser(description="Fetch survey and question by DB type.")
-    parser.add_argument("--db-type", required=True, help="mongo or mysql")
-    parser.add_argument("--su-id", required=True, help="Survey ID")
-    parser.add_argument("--qs-id", required=True, help="Question ID")
-    parser.add_argument(
-        "--cache",
-        action="store_true",
-        help="Store output in Redis using configured REDIS_URL/TTL.",
-    )
-    args = parser.parse_args()
-
-    async def _main():
-        """CLI entry point to fetch and print survey/question data."""
-        survey_response = _SurveyResponseStub(args.su_id, args.qs_id)
-        switcher = DBSwitcher(logger=ServerLogger())
-        if args.cache:
-            output, error = await switcher.fetch_and_cache_survey_details(
-                db_type=args.db_type,
-                survey_response=survey_response,
-                db=None,
-            )
-            if error:
-                print(error)
-                return
-        else:
-            survey, question, error = await switcher.fetch_survey_question(
-                db_type=args.db_type,
-                survey_response=survey_response,
-                db=None,
-            )
-            if error:
-                print(error)
-                return
-            output = switcher.build_output(survey, question)
-        print(output)
-
-    asyncio.run(_main())

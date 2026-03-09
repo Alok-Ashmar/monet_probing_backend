@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 from pydantic import BaseModel, Field
 
 from .types import PyObjectId
@@ -14,14 +14,8 @@ class SurveyConfig(BaseModel):
     """
 
     language: str = "English"
-    metrics: bool = True
-    llm: LLMEnum = LLMEnum("chatgpt")
-    llm_role: str = "survey assistant"
-    content_type: str = "Movie Trailer"
-    mediaAI: bool = False  # overall check for the feature
     add_context: bool = False
-    adaptive_probing: bool = False
-
+    repetition: bool = True
 
 class SurveyMedia(BaseModel):
     """
@@ -63,17 +57,12 @@ class QuestionConfig(BaseModel):
     Controls probing behavior, contextual settings, and acceptable quality thresholds.
     """
 
-    probes: int = 0
+    min_probes: int = 0
     max_probes: int = 0
-    targets: List[TargetConfig] = []
-    description: str = ""
-    media: MediaConfig = Field(
-        default_factory=MediaConfig
-    )  # survey config media should be true in order for this to work
     add_context: bool = False
-    allow_pasting: bool = False
     quality_threshold: int = 4
-    gibberish_score: int = 7
+    gibberish_score: int = 4
+    repetition: bool = True
 
 
 # -- Base Survey Schemas
@@ -161,13 +150,10 @@ class PdSurvey(BaseModel):
     Database-agnostic representation of a Survey used when interacting with the database service layer.
     """
 
-    id: Optional[int] = None
-    study_id: Optional[int] = None
-    cnt_id: int = 0
+    study_id: Optional[Union[str, int]] = 0
+    cnt_id: Optional[Union[str, int]] = 0
     survey_description: str
-    survey_title: Optional[str] = None
-    llm: LLMEnum = LLMEnum("chatgpt")
-    language: str = "English"
+    survey_title: Optional[str] = ""
     add_context: bool = False
     config: SurveyConfig = Field(default_factory=SurveyConfig)
 
@@ -177,15 +163,11 @@ class PdSurveyQuestion(BaseModel):
     Database-agnostic representation of a Survey Question used with the database service layer.
     """
 
-    id: Optional[int] = None
-    qs_id: Optional[int] = None
-    su_id: Optional[int] = None  # this will correspond to survey.id
-    cnt_id: int = 0
+    qs_id: Optional[Union[str, int]] = 0
+    su_id: Optional[Union[str, int]] = 0
+    cnt_id: Optional[Union[str, int]] = 0
     question: str = "<question>"
     description: str = "<description>"
-    seq_num: int = Field(
-        default_factory=int, description="Sequence position of the question"
-    )
     config: QuestionConfig = Field(default_factory=QuestionConfig)
 
 
