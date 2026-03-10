@@ -11,13 +11,6 @@ class ErrorDict(TypedDict):
     message: str
     code: int
 
-
-class SurveyResponseLike(Protocol):
-    """Minimum interface required for survey response input."""
-
-    su_id: str
-    qs_id: str
-
 class PyObjectId(ObjectId):
     """
     Custom type for MongoDB ObjectId,

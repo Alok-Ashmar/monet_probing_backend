@@ -1,6 +1,6 @@
 import os
 import json
-from redis import Redis
+from redis.asyncio import Redis
 from service.ServerLogger import ServerLogger
 from langchain_community.chat_message_histories import RedisChatMessageHistory
 
@@ -125,7 +125,7 @@ def _probe_state_key(su_id: str, qs_id: str, mo_id: str) -> str:
     return f"probe_state:{su_id}:{qs_id}:{mo_id}"
 
 
-def _load_probe_state(key: str) -> dict:
+async def _load_probe_state(key: str) -> dict:
     """
     Load a probe state dict from Redis.
 
@@ -137,7 +137,7 @@ def _load_probe_state(key: str) -> dict:
         an error occurs.
     """
     try:
-        cached = redis_client.get(key)
+        cached = await redis_client.get(key)
         if not cached:
             return {}
         return json.loads(cached)
@@ -147,7 +147,7 @@ def _load_probe_state(key: str) -> dict:
         return {}
 
 
-def _save_probe_state(key: str, state: dict) -> None:
+async def _save_probe_state(key: str, state: dict) -> None:
     """
     Persist a probe state dict to Redis.
 
@@ -161,9 +161,9 @@ def _save_probe_state(key: str, state: dict) -> None:
     try:
         payload = json.dumps(state)
         if PROBE_STATE_TTL > 0:
-            redis_client.setex(key, PROBE_STATE_TTL, payload)
+            await redis_client.setex(key, PROBE_STATE_TTL, payload)
         else:
-            redis_client.set(key, payload)
+            await redis_client.set(key, payload)
     except Exception as e:
         logger.error("Failed to save probe state to Redis")
         logger.error(e)

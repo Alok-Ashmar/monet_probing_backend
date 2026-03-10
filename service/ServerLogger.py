@@ -23,17 +23,17 @@ class ServerLogger:
     drama = "🎭"
     docs = "📚"
 
-    def info(self, message: str):
-        logger.info(message)
+    def info(self, message: str, **kwargs):
+        logger.info(message, **kwargs)
 
-    def warn(self, message: str):
-        logger.warning(message)
+    def warn(self, message: str, **kwargs):
+        logger.warning(message, **kwargs)
 
-    def error(self, message: str):
-        logger.error(message)
+    def error(self, message: str, **kwargs):
+        logger.error(message, **kwargs)
 
-    def critical(self, message: str):
-        logger.critical(message)
+    def critical(self, message: str, **kwargs):
+        logger.critical(message, **kwargs)
 
-    def deb(self, message: str):
-        logger.debug(message)
+    def deb(self, message: str, **kwargs):
+        logger.debug(message, **kwargs)

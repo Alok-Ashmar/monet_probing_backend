@@ -1,12 +1,11 @@
 import os
 import json
-import asyncio
 import websockets
-from redis import Redis
+from redis.asyncio import Redis
 from models.schemas import SurveyResponse
 from service.db_switcher import DBSwitcher
-from service.response_store import store_probe_response
 from service.ServerLogger import ServerLogger
+from service.response_store import store_probe_response
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from service.state_management import _probe_state_key, _load_probe_state, _save_probe_state
 
@@ -17,7 +16,8 @@ def get_connection_counts():
         "active_connections": active_connections,
     }
 
-websocket_router = APIRouter(prefix="/ws", tags=["websocket", "probe_backend"])
+# websocket_router = APIRouter(prefix="/ws", tags=["websocket", "probe_backend"])
+websocket_router = APIRouter(prefix="/ws", tags=["websocket", "ai-qa"])
 logger = ServerLogger()
 db_switcher = DBSwitcher(logger=logger)
 
@@ -25,184 +25,148 @@ redis_client = Redis.from_url(os.environ.get("REDIS_URL", "redis://localhost:637
 PROBE_ENGINE_WS_URL = os.environ.get("PROBE_ENGINE_WS_URL", "ws://localhost:8002/ws/probe_engine")
 
 
-@websocket_router.websocket("/probe_backend")
-async def websocket_probe_backend(websocket: WebSocket):
+# @websocket_router.websocket("/probe_backend")
+# async def websocket_probe_backend(websocket: WebSocket):
+@websocket_router.websocket("/ai-qa")
+async def websocket_ai_qa(websocket: WebSocket):
     """
     A simple websocket route that proxies messages to and from the Probing Engine websocket.
     """
     global active_connections
     await websocket.accept()
     active_connections += 1
-    
+
     try:
-        current_state_key = None
-        current_client_response = None
-        # Connect to the target probing engine websocket
         async with websockets.connect(PROBE_ENGINE_WS_URL) as engine_ws:
-            
-            async def forward_client_to_engine():
-                nonlocal current_state_key, current_client_response
-                """
-                Receives messages from the client and forwards them to the probing engine.
-                Tracks response counts to assign a session number for each probing session.
-                """
+            while True:
+                data = await websocket.receive_text()
+                client_response = SurveyResponse.model_validate_json(data)
+                logger.info(f"Received: su_id={client_response.su_id}, qs_id={client_response.qs_id}")
+
                 try:
-                    while True:
-                        data = await websocket.receive_text()
-                        client_response = SurveyResponse.model_validate_json(data)
-                        current_client_response = client_response
+                    db_type = DBSwitcher.get_db_type(str(client_response.su_id), str(client_response.qs_id))
+                    if not db_type:
+                        await websocket.send_json({
+                            "error": True,
+                            "message": "Invalid survey or question IDs",
+                            "code": 400
+                        })
+                        continue
 
-                        db_type = DBSwitcher.get_db_type(str(client_response.su_id), str(client_response.qs_id))
-                        if not db_type:
-                            await websocket.send_json(
-                                {
-                                    "error": True,
-                                    "message": "Invalid survey or question IDs",
-                                    "code": 400
-                                }
-                            )
-
-                        redis_key = f"survey_details:{client_response.su_id}:{client_response.qs_id}"
-                        cached_payload = redis_client.get(redis_key)
-                        if not cached_payload:
-                            output, error = await db_switcher.fetch_and_cache_survey_details(
-                                db_type=db_type,
-                                survey_response=client_response,
-                            )
-                            if error or not output:
-                                await websocket.send_json(error or 
-                                    {
-                                        "error": True,
-                                        "message": "Survey details not found",
-                                        "code": 404
-                                    }
-                                )
-
-                        state_key = _probe_state_key(
-                            str(client_response.su_id),
-                            str(client_response.qs_id),
-                            str(client_response.mo_id)
+                    redis_key = f"survey_details:{client_response.su_id}:{client_response.qs_id}"
+                    cached_payload = await redis_client.get(redis_key)
+                    if not cached_payload:
+                        output, error = await db_switcher.fetch_and_cache_survey_details(
+                            su_id=client_response.su_id,
+                            mo_id=client_response.mo_id,
+                            qs_id=client_response.qs_id,
+                            db_type=db_type,
                         )
-                        cached_probe_state = _load_probe_state(state_key)
-                        
-                        # Set default values if not present
-                        if not cached_probe_state:
-                            cached_probe_state = {
-                                "session_no": 0,
-                                "su_id": str(client_response.su_id),
-                                "mo_id": str(client_response.mo_id),
-                                "qs_id": str(client_response.qs_id),
-                                "counter": 0,
-                                "ended": False,
-                                "simple_store": True,
-                            }
+                        if error or not output:
+                            await websocket.send_json(error or {
+                                "error": True,
+                                "message": "Survey details not found",
+                                "code": 404
+                            })
+                            continue
+                        cached_payload = json.dumps(output)
+
+                    survey_details = json.loads(cached_payload) if isinstance(cached_payload, (str, bytes, bytearray)) else cached_payload
+                    root_question_text = survey_details.get("question", {}).get("question", "")
+
+                    state_key = _probe_state_key(
+                        str(client_response.su_id),
+                        str(client_response.qs_id),
+                        str(client_response.mo_id)
+                    )
+                    cached_probe_state = await _load_probe_state(state_key)
+
+                    if not cached_probe_state:
+                        cached_probe_state = {
+                            "session_no": 0,
+                            "su_id": str(client_response.su_id),
+                            "mo_id": str(client_response.mo_id),
+                            "qs_id": str(client_response.qs_id),
+                            "counter": 0,
+                            "ended": False,
+                            "simple_store": True,
+                        }
+                    else:
+                        if root_question_text and client_response.question == root_question_text:
+                            cached_probe_state["session_no"] = cached_probe_state.get("session_no", 0) + 1
+                            cached_probe_state["counter"] = 0
+                            cached_probe_state["ended"] = False
+
+                    cached_probe_state["counter"] = int(cached_probe_state.get("counter", 0)) + 1
+                    await _save_probe_state(state_key, cached_probe_state)
+
+                    await engine_ws.send(data)
+
+                    async for message in engine_ws:
+                        if isinstance(message, str):
+                            raw_message = message
+                            await websocket.send_text(message)
                         else:
-                            survey_details = json.loads(cached_payload) if isinstance(cached_payload, (str, bytes, bytearray)) else cached_payload
-                            root_question_text = survey_details.get("question", {}).get("question", "")
-                            
-                            if root_question_text and client_response.question == root_question_text:
-                                cached_probe_state["session_no"] = cached_probe_state.get("session_no", 0) + 1
-                                cached_probe_state["counter"] = 0
-                                cached_probe_state["ended"] = False
-                        
-                        # Increment the turn counter for active sessions before saving
-                        cached_probe_state["counter"] = int(cached_probe_state.get("counter", 0)) + 1
-                        
-                        _save_probe_state(state_key, cached_probe_state)
+                            raw_message = message.decode('utf-8') if hasattr(message, 'decode') else str(message)
+                            await websocket.send_bytes(message)
 
-                        # Track current state key for engine response proxy task
-                        current_state_key = state_key
+                        try:
+                            engine_response = json.loads(raw_message)
+                        except json.JSONDecodeError as parse_error:
+                            logger.error(f"Parse error: {parse_error}")
+                            continue
 
-                        await engine_ws.send(data)
-                except WebSocketDisconnect:
-                    logger.info("Client disconnected from the websocket.")
+                        if engine_response.get("message") == "streaming-ended":
+                            quality_ended = engine_response.get("response", {}).get("ended", False)
+
+                            if quality_ended:
+                                cached_probe_state["ended"] = True
+                                await _save_probe_state(state_key, cached_probe_state)
+
+                            if cached_probe_state.get("simple_store", True):
+                                try:
+                                    await store_probe_response(
+                                        db_type=db_type,
+                                        engine_response=engine_response,
+                                        client_response=client_response,
+                                        state=cached_probe_state,
+                                    )
+                                except Exception as store_err:
+                                    logger.error(f"Failed to store response: {store_err}")
+
+                            logger.info(f"Current: session={cached_probe_state.get('session_no')}, counter={cached_probe_state.get('counter')}")
+                            break
+
                 except Exception as e:
-                    logger.error(f"Error forwarding message from client to probing engine: {e}")
-                    await websocket.send_json(
-                        {
-                            "error": True,
-                            "message": str(e),
-                            "code": 500
-                        }
-                    )
+                    logger.error(f"Processing error: {e}", exc_info=True)
+                    await websocket.send_json({
+                        "error": True,
+                        "message": str(e),
+                        "code": 500
+                    })
 
-            async def forward_engine_to_client():
-                nonlocal current_state_key, current_client_response
-                """
-                Receives messages from the probing engine and forwards them to the client.
-                Updates the session state if a stream ends.
-                """
-                try:
-                    while True:
-                        data = await engine_ws.recv()
-                        
-                        # Parse the engine's response to check if the session ended
-                        engine_response = json.loads(data)
-                        
-                        # Update the current state key if the probe engine signals ending with ended=True
-                        is_streaming_ended = engine_response.get("message") == "streaming-ended"
-                        quality_ended = engine_response.get("response", {}).get("ended", False)
-
-                        if is_streaming_ended:
-                            if current_state_key:
-                                state = _load_probe_state(current_state_key)
-                                if quality_ended:
-                                    state["ended"] = True
-                                    _save_probe_state(current_state_key, state)
-
-                                # Store the response for every streaming-ended event (regardless of quality)
-                                if current_client_response and state.get("simple_store", True):
-                                    try:
-                                        await store_probe_response(
-                                            engine_response=engine_response,
-                                            current_client_response=current_client_response,
-                                            state=state,
-                                        )
-                                    except Exception as store_err:
-                                        logger.error(f"Failed to store response: {store_err}")
-
-                        await websocket.send_text(data)
-
-                except websockets.exceptions.ConnectionClosed:
-                    logger.info("Probing engine disconnected from the websocket.")
-                    await websocket.close(
-                        code=1001,
-                        reason="Probing engine disconnected from the websocket."
-                    )
-                except Exception as e:
-                    logger.error(f"Error forwarding message from probing engine to client: {e}")
-                    await websocket.send_json(
-                        {
-                            "error": True,
-                            "message": str(e),
-                            "code": 500
-                        }
-                    )
-
-            # Run both forwarding loops concurrently
-            client_task = asyncio.create_task(forward_client_to_engine())
-            engine_task = asyncio.create_task(forward_engine_to_client())
-            
-            try:
-                # Wait until either the client or the target disconnects
-                done, pending = await asyncio.wait(
-                    [client_task, engine_task],
-                    return_when=asyncio.FIRST_COMPLETED
-                )
-                
-                # Cancel the remaining task
-                for task in pending:
-                    task.cancel()
-            finally:
-                active_connections -= 1
-                
     except WebSocketDisconnect:
-        print("Frontend client disconnected")
+        logger.info("Client disconnected")
     except ConnectionRefusedError:
-        print(f"Could not connect to the Probing Engine at {PROBE_ENGINE_WS_URL}")
-        await websocket.close(code=1011, reason="Probing engine unreachable")
+        logger.error(f"Could not connect to the Probing Engine at {PROBE_ENGINE_WS_URL}")
+        try:
+            await websocket.close(code=1011, reason="Probing engine unreachable")
+        except:
+            await websocket.send_json({
+                "error": True,
+                "message": "Probing engine unreachable",
+                "code": 1011
+            })
     except Exception as e:
-        print(f"WebSocket proxy error: {e}")
-        await websocket.close(code=1011, reason="Internal server error")
+        logger.error(f"WebSocket error: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="Internal error")
+        except:
+            await websocket.send_json({
+                "error": True,
+                "message": "Internal error",
+                "code": 1011
+            })
     finally:
         active_connections -= 1
+        logger.info(f"Connection closed. Active: {active_connections}")

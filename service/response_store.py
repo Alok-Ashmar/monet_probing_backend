@@ -11,8 +11,9 @@ db_switcher = DBSwitcher(logger=logger)
 
 async def store_probe_response(
     *,
+    db_type: str,
     engine_response: dict,
-    current_client_response: SurveyResponse,
+    client_response: SurveyResponse,
     state: dict,
 ) -> Any:
     """
@@ -21,7 +22,7 @@ async def store_probe_response(
 
     Args:
         engine_response:          The parsed JSON from the engine's streaming-ended message.
-        current_client_response:  The last SurveyResponse received from the client.
+        client_response:  The last SurveyResponse received from the client.
         state:                    The current probe state dict loaded from Redis.
 
     Returns:
@@ -40,29 +41,24 @@ async def store_probe_response(
         keywords=metrics.get("keywords", []),
         reason=metrics.get("reason", ""),
         gibberish_score=metrics.get("gibberish_score", 0),
-        question=current_client_response.question,
-        response=current_client_response.response,
+        question=client_response.question,
+        response=client_response.response,
     )
 
     # Reconstruct probe-like object from Redis state, falling back to client response fields
     probe = SimpleNamespace(
         ended=state.get("ended", True),
-        mo_id=state.get("mo_id", current_client_response.mo_id),
-        su_id=state.get("su_id", current_client_response.su_id),
-        qs_id=state.get("qs_id", current_client_response.qs_id),
+        mo_id=state.get("mo_id", client_response.mo_id),
+        su_id=state.get("su_id", client_response.su_id),
+        qs_id=state.get("qs_id", client_response.qs_id),
         counter=state.get("counter", 0),
         session_no=state.get("session_no", 0),
-    )
-
-    db_type = DBSwitcher.get_db_type(
-        str(current_client_response.su_id),
-        str(current_client_response.qs_id),
     )
 
     return await db_switcher.simple_store_response(
         db_type=db_type,
         nsight_v2=nsight_v2,
-        survey_response=current_client_response,
+        survey_response=client_response,
         probe=probe,
         session_no=probe.session_no,
     )

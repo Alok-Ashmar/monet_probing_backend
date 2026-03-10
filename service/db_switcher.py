@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any, Dict, Optional, Tuple, TYPE_CHECKING
 
-from models.types import ErrorDict, SurveyResponseLike
+from models.types import ErrorDict
 
 if TYPE_CHECKING:
     from models.schemas import PdSurvey, PdSurveyQuestion
@@ -20,7 +20,8 @@ class MongoSurveyRepository:
 
     async def fetch_survey_question(
         self,
-        survey_response: SurveyResponseLike,
+        su_id: str,
+        qs_id: str
     ) -> FetchResult:
         """Fetch survey and question from MongoDB and normalize to Pydantic models."""
         from bson import ObjectId
@@ -37,7 +38,7 @@ class MongoSurveyRepository:
         db_survey = monet_db.get_collection("surveys")
         db_question = monet_db.get_collection("survey-questions")
 
-        survey_doc = db_survey.find_one({"_id": ObjectId(survey_response.su_id)})
+        survey_doc = db_survey.find_one({"_id": ObjectId(su_id)})
         if not survey_doc:
             return None, None, {
                 "error": True,
@@ -45,7 +46,7 @@ class MongoSurveyRepository:
                 "code": 404,
             }
 
-        question_doc = db_question.find_one({"_id": ObjectId(survey_response.qs_id)})
+        question_doc = db_question.find_one({"_id": ObjectId(qs_id)})
         if not question_doc:
             return None, None, {
                 "error": True,
@@ -121,7 +122,8 @@ class MySQLSurveyRepository:
 
     async def fetch_survey_question(
         self,
-        survey_response: SurveyResponseLike,
+        su_id: str,
+        qs_id: str,
         db: Any = None,
     ) -> FetchResult:
         """Fetch survey and question from MySQL via SQLAlchemy."""
@@ -141,7 +143,7 @@ class MySQLSurveyRepository:
             result = await session.execute(
                 query_survey,
                 {
-                    "su_id": survey_response.su_id,
+                    "su_id": su_id,
                 },
             )
             survey_row = result.mappings().first()
@@ -175,8 +177,8 @@ class MySQLSurveyRepository:
             result = await session.execute(
                 query_question,
                 {
-                    "su_id": survey_response.su_id,
-                    "qs_id": survey_response.qs_id,
+                    "su_id": su_id,
+                    "qs_id": qs_id,
                 },
             )
             question_row = result.mappings().first()
@@ -272,13 +274,6 @@ class DBSwitcher:
         )
         self._redis_ttl_survey = redis_ttl_survey
 
-    def _normalize_db_type(self, db_type: Optional[str]) -> str:
-        """Normalize DB type and default to mongo when not provided."""
-        if db_type:
-            return db_type.strip().lower()
-        if self._logger:
-            self._logger.error("db_type is not set. Defaulting to mongo.")
-        return "mongo"
 
     @staticmethod
     def get_db_type(su_id: str, qs_id: str) -> Optional[str]:
@@ -299,13 +294,15 @@ class DBSwitcher:
             return "mongo"
         elif _is_int_id(su_id) and _is_int_id(qs_id):
             return "mysql"
+
         return None
 
     async def fetch_survey_question(
         self,
         *,
-        db_type: Optional[str],
-        survey_response: SurveyResponseLike,
+        db_type: str,
+        su_id: str,
+        qs_id: str,
         db: Any = None,
     ) -> FetchResult:
         """
@@ -313,13 +310,11 @@ class DBSwitcher:
 
         error_dict is None when both survey and question are found.
         """
-        db_type_norm = self._normalize_db_type(db_type)
+        if db_type == "mongo":
+            return await self._mongo.fetch_survey_question(su_id, qs_id)
 
-        if db_type_norm in {"mongo", "mongodb", ""}:
-            return await self._mongo.fetch_survey_question(survey_response)
-
-        if db_type_norm in {"mysql", "sql"}:
-            return await self._mysql.fetch_survey_question(survey_response, db)
+        if db_type == "mysql":
+            return await self._mysql.fetch_survey_question(su_id, qs_id, db)
 
         raise ValueError(f"Unsupported db_type: {db_type}")
 
@@ -352,7 +347,7 @@ class DBSwitcher:
             },
         }
 
-    def save_output_to_redis(
+    async def save_output_to_redis(
         self,
         *,
         output: Dict[str, Dict[str, Any]],
@@ -360,18 +355,21 @@ class DBSwitcher:
         qs_id: str,
     ) -> str:
         """Save output payload to Redis and return the key used."""
-        from redis import Redis
+        from redis.asyncio import Redis
 
         redis_client = Redis.from_url(self._redis_url)
         redis_key = f"survey_details:{su_id}:{qs_id}"
-        redis_client.setex(redis_key, self._redis_ttl_survey, json.dumps(output))
+        await redis_client.setex(redis_key, self._redis_ttl_survey, json.dumps(output))
+        await redis_client.aclose()
         return redis_key
 
     async def fetch_and_cache_survey_details(
         self,
         *,
-        db_type: Optional[str],
-        survey_response: SurveyResponseLike,
+        su_id: str,
+        mo_id: str,
+        qs_id: str,
+        db_type: str,
         db: Any = None,
     ) -> Tuple[Optional[Dict[str, Dict[str, Any]]], Optional[ErrorDict]]:
         """
@@ -381,24 +379,25 @@ class DBSwitcher:
         """
         survey, question, error = await self.fetch_survey_question(
             db_type=db_type,
-            survey_response=survey_response,
+            su_id=su_id,
+            qs_id=qs_id,
             db=db,
         )
         if error or not survey or not question:
             return None, error
 
         output = self.build_output(survey, question)
-        self.save_output_to_redis(
+        await self.save_output_to_redis(
             output=output,
-            su_id=survey_response.su_id,
-            qs_id=survey_response.qs_id,
+            su_id=su_id,
+            qs_id=qs_id,
         )
         return output, None
 
     async def simple_store_response(
         self,
         *,
-        db_type: Optional[str],
+        db_type: str,
         nsight_v2: Any,
         survey_response: Any,
         probe: Any,
@@ -406,15 +405,14 @@ class DBSwitcher:
         db: Any = None,
     ) -> Any:
         """Store probe response in Mongo or MySQL depending on db_type."""
-        db_type_norm = self._normalize_db_type(db_type)
-        if db_type_norm in {"mongo", "mongodb"}:
+        if db_type == "mongo":
             return self._mongo.store_response(
                 nsight_v2=nsight_v2,
                 probe=probe,
                 session_no=session_no,
                 logger=self._logger,
             )
-        if db_type_norm in {"mysql", "sql"}:
+        if db_type == "mysql":
             return await self._mysql.store_response(
                 nsight_v2=nsight_v2,
                 survey_response=survey_response,
